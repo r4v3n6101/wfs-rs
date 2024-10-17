@@ -18,8 +18,11 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        overlays = [ rust-overlay.overlays.default ];
-        pkgs = import nixpkgs { inherit system overlays; };
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+
         rustVersion = pkgs.rust-bin.nightly.latest.default;
         rustPlatform = pkgs.makeRustPlatform {
           cargo = rustVersion;
@@ -27,7 +30,13 @@
         };
         manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
 
-        buildInputs = [ pkgs.fuse3 ];
+        buildInputs =
+          if pkgs.stdenv.isLinux then
+            [ pkgs.fuse3 ]
+          else if pkgs.stdenv.isDarwin then
+            [ pkgs.macfuse-stubs ]
+          else
+            [ ];
         nativeBuildInputs = [ pkgs.pkg-config ];
 
         rustBuiltPackage = rustPlatform.buildRustPackage {
