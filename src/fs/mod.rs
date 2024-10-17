@@ -18,11 +18,13 @@ mod util;
 
 const DEFAULT_ATTR_TTL: Duration = Duration::from_secs(60);
 
+type Ino = u64;
+
 #[derive(Debug)]
 struct Data {
     entry: Entry,
     // For mipmaps only
-    level: usize,
+    level: u8,
     cache: Option<Vec<u8>>,
 }
 
@@ -31,7 +33,7 @@ struct INode {
     /// Name of inode
     name: Cow<'static, OsStr>,
     /// Parent inode if present (root has none)
-    parent: Option<u64>,
+    parent: Option<Ino>,
     /// For mipmaps
     data: Option<Data>,
 }
@@ -64,11 +66,11 @@ impl INode {
         )
     }
 
-    fn resolve_file_attr(&mut self, ino: u64) -> FileAttr {
+    fn resolve_file_attr(&mut self, ino: Ino) -> FileAttr {
         let data = self.resolve_data();
         FileAttr {
             ino,
-            size: data.map(|x| x.len()).unwrap_or(0) as u64,
+            size: data.map(|x| x.len()).unwrap_or(0) as Ino,
             blocks: 0,
             atime: SystemTime::UNIX_EPOCH,
             mtime: SystemTime::UNIX_EPOCH,
@@ -87,70 +89,83 @@ impl INode {
 }
 
 #[derive(Debug)]
+struct INodes {
+    inner: Vec<INode>,
+}
+
+impl INodes {
+    fn empty() -> Self {
+        Self {
+            inner: vec![INode::default()],
+        }
+    }
+
+    fn push_inode(&mut self, inode: INode) -> Ino {
+        let idx = self.inner.len() as Ino;
+        self.inner.push(inode);
+        idx
+    }
+}
+
+#[derive(Debug)]
 pub struct WadFS {
     ttl_attr: Duration,
-    inodes: Vec<INode>,
+    inodes: INodes,
 
-    root_ino: u64,
-    pics_ino: u64,
-    miptexs_ino: u64,
-    fonts_ino: u64,
-    other_ino: u64,
+    root_ino: Ino,
+    pics_ino: Option<Ino>,
+    miptexs_ino: Option<Ino>,
+    fonts_ino: Option<Ino>,
+    other_ino: Option<Ino>,
 }
 
 impl WadFS {
     pub fn new() -> Self {
-        let mut this = Self {
-            inodes: Vec::new(),
-            ttl_attr: DEFAULT_ATTR_TTL,
-
-            root_ino: 0,
-            pics_ino: 0,
-            miptexs_ino: 0,
-            fonts_ino: 0,
-            other_ino: 0,
-        };
-
-        this.root_ino = this.push_inode(INode {
+        let mut inodes = INodes::empty();
+        let root_ino = inodes.push_inode(INode {
             name: OsStr::new(".").into(),
             ..Default::default()
         });
-        this.pics_ino = this.push_inode(INode {
-            name: OsStr::new("pics").into(),
-            parent: Some(this.root_ino),
-            ..Default::default()
-        });
-        this.miptexs_ino = this.push_inode(INode {
-            name: OsStr::new("miptexs").into(),
-            parent: Some(this.root_ino),
-            ..Default::default()
-        });
-        this.fonts_ino = this.push_inode(INode {
-            name: OsStr::new("fonts").into(),
-            parent: Some(this.root_ino),
-            ..Default::default()
-        });
-        this.other_ino = this.push_inode(INode {
-            name: OsStr::new("other").into(),
-            parent: Some(this.root_ino),
-            ..Default::default()
-        });
 
-        this
+        Self {
+            inodes,
+            root_ino,
+
+            ttl_attr: DEFAULT_ATTR_TTL,
+            pics_ino: None,
+            miptexs_ino: None,
+            fonts_ino: None,
+            other_ino: None,
+        }
     }
 
     pub fn append_entries<R: Read + Seek + Send + Sync + 'static>(
         &mut self,
         reader: R,
     ) -> io::Result<()> {
-        let entries = goldsrc_rs::wad_entries(reader, true)?;
+        let Self {
+            inodes,
+            root_ino,
+            pics_ino,
+            miptexs_ino,
+            fonts_ino,
+            other_ino,
+            ..
+        } = self;
 
-        for (name, entry) in entries {
+        for (name, entry) in goldsrc_rs::wad_entries(reader, true)? {
             match entry.ty {
                 ContentType::Picture => {
-                    self.push_inode(INode {
+                    let pics_ino = pics_ino.get_or_insert_with(|| {
+                        inodes.push_inode(INode {
+                            name: OsStr::new("pics").into(),
+                            parent: Some(*root_ino),
+                            ..Default::default()
+                        })
+                    });
+                    inodes.push_inode(INode {
                         name: OsString::from(util::pic_name(name)).into(),
-                        parent: Some(self.pics_ino),
+                        parent: Some(*pics_ino),
                         data: Some(Data {
                             entry,
                             level: 1,
@@ -159,14 +174,23 @@ impl WadFS {
                     });
                 }
                 ContentType::MipTexture => {
-                    let miptex_ino = self.push_inode(INode {
+                    let miptexs_ino = miptexs_ino.get_or_insert_with(|| {
+                        inodes.push_inode(INode {
+                            name: OsStr::new("miptexs").into(),
+                            parent: Some(*root_ino),
+                            ..Default::default()
+                        })
+                    });
+                    let miptex_ino = inodes.push_inode(INode {
                         name: OsString::from(name.as_str()).into(),
-                        parent: Some(self.miptexs_ino),
+                        parent: Some(*miptexs_ino),
                         ..Default::default()
                     });
                     for i in 0..MIP_LEVELS {
+                        let i = i as u8;
+
                         let entry = entry.clone();
-                        self.push_inode(INode {
+                        inodes.push_inode(INode {
                             name: OsString::from(util::mip_level_name(i)).into(),
                             parent: Some(miptex_ino),
                             data: Some(Data {
@@ -178,20 +202,34 @@ impl WadFS {
                     }
                 }
                 ContentType::Font => {
-                    self.push_inode(INode {
+                    let fonts_ino = fonts_ino.get_or_insert_with(|| {
+                        inodes.push_inode(INode {
+                            name: OsStr::new("fonts").into(),
+                            parent: Some(*root_ino),
+                            ..Default::default()
+                        })
+                    });
+                    inodes.push_inode(INode {
                         name: OsString::from(util::pic_name(name)).into(),
-                        parent: Some(self.fonts_ino),
+                        parent: Some(*fonts_ino),
                         data: Some(Data {
                             entry,
-                            level: 1,
+                            level: 0,
                             cache: None,
                         }),
                     });
                 }
                 ContentType::Other(_) => {
-                    self.push_inode(INode {
+                    let other_ino = other_ino.get_or_insert_with(|| {
+                        inodes.push_inode(INode {
+                            name: OsStr::new("other").into(),
+                            parent: Some(*root_ino),
+                            ..Default::default()
+                        })
+                    });
+                    inodes.push_inode(INode {
                         name: OsString::from(name.as_str()).into(),
-                        parent: Some(self.other_ino),
+                        parent: Some(*other_ino),
                         data: Some(Data {
                             entry,
                             level: 0,
@@ -205,27 +243,18 @@ impl WadFS {
 
         Ok(())
     }
-
-    fn push_inode(&mut self, inode: INode) -> u64 {
-        if self.inodes.is_empty() {
-            self.inodes.push(INode::default());
-        }
-
-        let idx = self.inodes.len() as u64;
-        self.inodes.push(inode);
-        idx
-    }
 }
 
 impl Filesystem for WadFS {
-    fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&mut self, _req: &Request<'_>, parent: Ino, name: &OsStr, reply: ReplyEntry) {
         if let Some((ino, inode)) = self
             .inodes
+            .inner
             .iter_mut()
             .enumerate()
             .find(|(_, inode)| inode.parent == Some(parent) && inode.name == name)
         {
-            reply.entry(&self.ttl_attr, &inode.resolve_file_attr(ino as u64), 0);
+            reply.entry(&self.ttl_attr, &inode.resolve_file_attr(ino as Ino), 0);
         } else {
             reply.error(ENOENT);
         }
@@ -234,13 +263,14 @@ impl Filesystem for WadFS {
     fn readdir(
         &mut self,
         _req: &Request<'_>,
-        ino: u64,
+        ino: Ino,
         _fh: u64,
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
         for (i, (ino, inode)) in self
             .inodes
+            .inner
             .iter()
             .enumerate()
             .filter(|(_, inode)| inode.parent == Some(ino))
@@ -249,15 +279,15 @@ impl Filesystem for WadFS {
             // FIXME: Error if removed
             .take(5)
         {
-            if reply.add(ino as u64, (i + 1) as i64, inode.file_type(), &inode.name) {
+            if reply.add(ino as Ino, (i + 1) as i64, inode.file_type(), &inode.name) {
                 return;
             }
         }
         reply.ok()
     }
 
-    fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
-        if let Some(inode) = self.inodes.get_mut(ino as usize) {
+    fn getattr(&mut self, _req: &Request<'_>, ino: Ino, reply: ReplyAttr) {
+        if let Some(inode) = self.inodes.inner.get_mut(ino as usize) {
             reply.attr(&self.ttl_attr, &inode.resolve_file_attr(ino));
         } else {
             reply.error(ENOENT);
@@ -267,7 +297,7 @@ impl Filesystem for WadFS {
     fn read(
         &mut self,
         _req: &Request<'_>,
-        ino: u64,
+        ino: Ino,
         _fh: u64,
         offset: i64,
         size: u32,
@@ -275,7 +305,7 @@ impl Filesystem for WadFS {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        match self.inodes.get_mut(ino as usize) {
+        match self.inodes.inner.get_mut(ino as usize) {
             Some(inode) => match inode.resolve_data() {
                 Some(data) => {
                     let start = offset as usize;
