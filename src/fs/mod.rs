@@ -19,6 +19,11 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 mod util;
 
 const DEFAULT_ATTR_TTL: Duration = Duration::from_secs(60);
+const ROOT_INO: Ino = 1;
+const PICS_DIR_INO: Ino = 2;
+const MIPTEXS_DIR_INO: Ino = 3;
+const FONTS_DIR_INO: Ino = 4;
+const OTHER_DIR_INO: Ino = 5;
 
 type Ino = u64;
 
@@ -65,67 +70,44 @@ impl INode {
 }
 
 #[derive(Debug)]
-struct INodes {
-    inner: RwLock<Vec<INode>>,
-}
-
-impl INodes {
-    fn empty() -> Self {
-        Self {
-            inner: RwLock::new(vec![INode::default()]),
-        }
-    }
-
-    fn push_inode(&self, inode: INode) -> Ino {
-        let idx = self.inner.read().unwrap().len() as Ino;
-        self.inner.write().unwrap().push(inode);
-        idx
-    }
-}
-
-#[derive(Debug)]
 pub struct WadFS {
     ttl_attr: Duration,
-    inodes: INodes,
-
-    pics_ino: Ino,
-    miptexs_ino: Ino,
-    fonts_ino: Ino,
-    other_ino: Ino,
+    inodes: RwLock<Vec<INode>>,
 }
 
 impl WadFS {
     pub fn new() -> Self {
-        let inodes = INodes::empty();
-        let root_ino = inodes.push_inode(INode {
-            name: OsStr::new(".").into(),
-            ..Default::default()
-        });
+        let inodes = vec![
+            INode::default(),
+            INode {
+                name: OsStr::new(".").into(),
+                ..Default::default()
+            },
+            INode {
+                name: OsStr::new("pics").into(),
+                parent: Some(ROOT_INO),
+                ..Default::default()
+            },
+            INode {
+                name: OsStr::new("miptexs").into(),
+                parent: Some(ROOT_INO),
+                ..Default::default()
+            },
+            INode {
+                name: OsStr::new("fonts").into(),
+                parent: Some(ROOT_INO),
+                ..Default::default()
+            },
+            INode {
+                name: OsStr::new("other").into(),
+                parent: Some(ROOT_INO),
+                ..Default::default()
+            },
+        ];
 
         Self {
-            pics_ino: inodes.push_inode(INode {
-                name: OsStr::new("pics").into(),
-                parent: Some(root_ino),
-                ..Default::default()
-            }),
-            miptexs_ino: inodes.push_inode(INode {
-                name: OsStr::new("miptexs").into(),
-                parent: Some(root_ino),
-                ..Default::default()
-            }),
-            fonts_ino: inodes.push_inode(INode {
-                name: OsStr::new("fonts").into(),
-                parent: Some(root_ino),
-                ..Default::default()
-            }),
-            other_ino: inodes.push_inode(INode {
-                name: OsStr::new("other").into(),
-                parent: Some(root_ino),
-                ..Default::default()
-            }),
-
+            inodes: RwLock::new(inodes),
             ttl_attr: DEFAULT_ATTR_TTL,
-            inodes,
         }
     }
 
@@ -133,14 +115,7 @@ impl WadFS {
         &mut self,
         reader: R,
     ) -> io::Result<()> {
-        let Self {
-            inodes,
-            pics_ino,
-            miptexs_ino,
-            fonts_ino,
-            other_ino,
-            ..
-        } = self;
+        let Self { inodes, .. } = self;
 
         goldsrc_rs::wad_entries(reader, true)?
             .into_par_iter()
@@ -162,9 +137,9 @@ impl WadFS {
                             tracing::warn!(%err, %name, ?entry, "couldn't convert wad entry to image");
                         }
 
-                        inodes.push_inode(INode {
+                        inodes.write().unwrap().push(INode {
                             name: OsString::from(util::pic_name(name)).into(),
-                            parent: Some(*pics_ino),
+                            parent: Some(PICS_DIR_INO),
                             data: Some(buf.into_inner()),
                         });
                     }
@@ -173,11 +148,17 @@ impl WadFS {
                     }
                 }
                 ContentType::MipTexture => {
-                    let miptex_ino = inodes.push_inode(INode {
-                        name: OsString::from(name.as_str()).into(),
-                        parent: Some(*miptexs_ino),
-                        ..Default::default()
-                    });
+                    let miptex_ino = {
+                        let mut inodes = inodes.write().unwrap();
+                        
+                        inodes.push(INode {
+                            name: OsString::from(name.as_str()).into(),
+                            parent: Some(MIPTEXS_DIR_INO),
+                            ..Default::default()
+                        });
+                        
+                        inodes.len() as Ino
+                    };
 
                     match goldsrc_rs::miptex(entry.reader()) {
                         Ok(MipTexture {
@@ -199,7 +180,7 @@ impl WadFS {
                                         tracing::warn!(%err, %name, ?entry, "couldn't convert wad entry to image");
                                     }
 
-                                    inodes.push_inode(INode {
+                                    inodes.write().unwrap().push(INode {
                                         name: OsString::from(util::mip_level_name(i)).into(),
                                         parent: Some(miptex_ino),
                                         data: Some(buf.into_inner()),
@@ -224,9 +205,9 @@ impl WadFS {
                             tracing::warn!(%err, %name, ?entry, "couldn't convert wad entry to image");
                         }
 
-                        inodes.push_inode(INode {
+                        inodes.write().unwrap().push(INode {
                             name: OsString::from(util::pic_name(name)).into(),
-                            parent: Some(*fonts_ino),
+                            parent: Some(FONTS_DIR_INO),
                             data: Some(buf.into_inner()),
                         });
                     }
@@ -240,9 +221,9 @@ impl WadFS {
                         tracing::warn!(%err, %name, ?entry, "couldn't read wad entry");
                     }
 
-                    inodes.push_inode(INode {
+                    inodes.write().unwrap().push(INode {
                         name: OsString::from(name.as_str()).into(),
-                        parent: Some(*other_ino),
+                        parent: Some(OTHER_DIR_INO),
                         data: Some(buf),
                     });
                 }
@@ -257,7 +238,6 @@ impl Filesystem for WadFS {
     fn lookup(&mut self, _req: &Request<'_>, parent: Ino, name: &OsStr, reply: ReplyEntry) {
         if let Some((ino, inode)) = self
             .inodes
-            .inner
             .read()
             .unwrap()
             .iter()
@@ -280,7 +260,6 @@ impl Filesystem for WadFS {
     ) {
         for (i, (ino, inode)) in self
             .inodes
-            .inner
             .read()
             .unwrap()
             .iter()
@@ -299,7 +278,7 @@ impl Filesystem for WadFS {
     }
 
     fn getattr(&mut self, _req: &Request<'_>, ino: Ino, reply: ReplyAttr) {
-        if let Some(inode) = self.inodes.inner.read().unwrap().get(ino as usize) {
+        if let Some(inode) = self.inodes.read().unwrap().get(ino as usize) {
             reply.attr(&self.ttl_attr, &inode.resolve_file_attr(ino));
         } else {
             reply.error(ENOENT);
@@ -317,7 +296,7 @@ impl Filesystem for WadFS {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        match self.inodes.inner.read().unwrap().get(ino as usize) {
+        match self.inodes.read().unwrap().get(ino as usize) {
             Some(inode) => match &inode.data {
                 Some(data) => {
                     let start = offset as usize;
