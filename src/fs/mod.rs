@@ -148,18 +148,6 @@ impl WadFS {
                     }
                 }
                 ContentType::MipTexture => {
-                    let miptex_ino = {
-                        let mut inodes = inodes.write().unwrap();
-                        
-                        inodes.push(INode {
-                            name: OsString::from(name.as_str()).into(),
-                            parent: Some(MIPTEXS_DIR_INO),
-                            ..Default::default()
-                        });
-                        
-                        inodes.len() as Ino
-                    };
-
                     match goldsrc_rs::miptex(entry.reader()) {
                         Ok(MipTexture {
                             width,
@@ -168,6 +156,18 @@ impl WadFS {
                             ..
                         }) => {
                             if let Some(data) = &data {
+                                let miptex_ino = {
+                                    let mut inodes = inodes.write().unwrap();
+
+                                    inodes.push(INode {
+                                        name: OsString::from(name.as_str()).into(),
+                                        parent: Some(MIPTEXS_DIR_INO),
+                                        ..Default::default()
+                                    });
+
+                                    inodes.len() as Ino
+                                };
+
                                 for i in 0..MIP_LEVELS {
                                     let mut buf = Cursor::new(vec![]);
                                     if let Err(err) = util::pic2img(
