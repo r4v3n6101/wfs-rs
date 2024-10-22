@@ -12,8 +12,13 @@ categories = ["parsing", "game-development"]
 [dependencies]
 tracing-subscriber = "0.3"
 tracing = "0.1"
+
 goldsrc-rs = "0.14"
+
 fuser = "0.14"
 libc = "0.2.159"
+
 image = { version = "0.25", default-features = false, features = [ "tga" ] }
+rayon = "1.10.0"
+
 clap = { version = "4.5.20", features = ["derive"] }

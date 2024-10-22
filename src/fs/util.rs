@@ -1,14 +1,11 @@
-use std::io::{self, Cursor, Seek, Write};
+use std::io::{self, Seek, Write};
 
-use goldsrc_rs::{
-    texture::{Font, Index, MipTexture, Picture, Rgb},
-    wad::{ContentType, Entry},
-};
+use goldsrc_rs::texture::{Index, Rgb};
 use image::ImageFormat;
 
 const DEFAULT_IMAGE_FMT: &str = "tga";
 
-pub fn mip_level_name(level: u8) -> String {
+pub fn mip_level_name(level: usize) -> String {
     format!("mip_{}.{}", level, DEFAULT_IMAGE_FMT)
 }
 
@@ -16,58 +13,7 @@ pub fn pic_name(name: impl AsRef<str>) -> String {
     format!("{}.{}", name.as_ref(), DEFAULT_IMAGE_FMT)
 }
 
-pub fn parse_wad_data(entry: &Entry, level: u8) -> io::Result<Vec<u8>> {
-    match entry.ty {
-        ContentType::MipTexture => {
-            let MipTexture {
-                width,
-                height,
-                data,
-                ..
-            } = goldsrc_rs::miptex(entry.reader())?;
-            let mut buf = Cursor::new(vec![]);
-            if let Some(data) = data {
-                pic2img(
-                    width >> level,
-                    height >> level,
-                    &data.indices[level as usize],
-                    &data.palette,
-                    &mut buf,
-                )?;
-            }
-
-            Ok(buf.into_inner())
-        }
-        ContentType::Picture => {
-            let Picture {
-                width,
-                height,
-                data,
-            } = goldsrc_rs::pic(entry.reader())?;
-            let mut buf = Cursor::new(vec![]);
-            pic2img(width, height, &data.indices[0], &data.palette, &mut buf)?;
-            Ok(buf.into_inner())
-        }
-        ContentType::Font => {
-            let Font {
-                width,
-                height,
-                data,
-                ..
-            } = goldsrc_rs::font(entry.reader())?;
-            let mut buf = Cursor::new(vec![]);
-            pic2img(width, height, &data.indices[0], &data.palette, &mut buf)?;
-            Ok(buf.into_inner())
-        }
-        ContentType::Other(_) => {
-            // As is
-            todo!()
-        }
-        _ => unimplemented!(),
-    }
-}
-
-fn pic2img<W: Write + Seek>(
+pub fn pic2img<W: Write + Seek>(
     width: u32,
     height: u32,
     indices: &[Index],
