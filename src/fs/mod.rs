@@ -48,7 +48,7 @@ impl INode {
         self.data.as_ref().map(|x| x.len()).unwrap_or(0) as u64
     }
 
-    fn resolve_file_attr(&self, ino: Ino) -> FileAttr {
+    fn file_attr(&self, ino: Ino) -> FileAttr {
         FileAttr {
             ino,
             size: self.size(),
@@ -118,7 +118,7 @@ impl WadFS {
         let Self { inodes, .. } = self;
 
         goldsrc_rs::wad_entries(reader, true)?
-            .into_par_iter()
+            .into_iter()
             .for_each(|(name, entry)| match entry.ty {
                 ContentType::Picture => match goldsrc_rs::pic(entry.reader()) {
                     Ok(Picture {
@@ -147,50 +147,50 @@ impl WadFS {
                         tracing::warn!(%err, %name, ?entry, "couldn't read wad picture entry");
                     }
                 }
-                ContentType::MipTexture => {
-                    match goldsrc_rs::miptex(entry.reader()) {
-                        Ok(MipTexture {
-                            width,
-                            height,
-                            data,
-                            ..
-                        }) => {
-                            if let Some(data) = &data {
-                                let miptex_ino = {
-                                    let mut inodes = inodes.write().unwrap();
+                ContentType::MipTexture => match goldsrc_rs::miptex(entry.reader()) {
+                    Ok(MipTexture {
+                        width,
+                        height,
+                        data,
+                        ..
+                    }) => {
+                        if let Some(data) = &data {
+                            let miptex_ino = {
+                                let mut inodes = inodes.write().unwrap();
 
-                                    inodes.push(INode {
-                                        name: OsString::from(name.as_str()).into(),
-                                        parent: Some(MIPTEXS_DIR_INO),
-                                        ..Default::default()
-                                    });
+                                inodes.push(INode {
+                                    name: OsString::from(name.as_str()).into(),
+                                    parent: Some(MIPTEXS_DIR_INO),
+                                    ..Default::default()
+                                });
 
-                                    inodes.len() as Ino
-                                };
+                                inodes.len() as Ino
+                            };
 
-                                for i in 0..MIP_LEVELS {
-                                    let mut buf = Cursor::new(vec![]);
-                                    if let Err(err) = util::pic2img(
-                                        width >> i,
-                                        height >> i,
-                                        &data.indices[i],
-                                        &data.palette,
-                                        &mut buf,
-                                    ) {
-                                        tracing::warn!(%err, %name, ?entry, "couldn't convert wad entry to image");
-                                    }
-
-                                    inodes.write().unwrap().push(INode {
-                                        name: OsString::from(util::mip_level_name(i)).into(),
-                                        parent: Some(miptex_ino),
-                                        data: Some(buf.into_inner()),
-                                    });
+                            for i in 0..MIP_LEVELS {
+                                let mut buf = Cursor::new(vec![]);
+                                if let Err(err) = util::pic2img(
+                                    width >> i,
+                                    height >> i,
+                                    &data.indices[i],
+                                    &data.palette,
+                                    &mut buf,
+                                ) {
+                                    tracing::warn!(%err, %name, ?entry, "couldn't convert wad entry to image");
                                 }
+
+                                inodes.write().unwrap().push(INode {
+                                    name: OsString::from(util::mip_level_name(i)).into(),
+                                    parent: Some(miptex_ino),
+                                    data: Some(buf.into_inner()),
+                                });
                             }
+                        } else {
+                            tracing::info!(%name, ?entry, "empty miptex detected");
                         }
-                        Err(err) =>  {
-                            tracing::warn!(%err, %name, ?entry, "couldn't read wad miptex entry");
-                        }
+                    }
+                    Err(err) =>  {
+                        tracing::warn!(%err, %name, ?entry, "couldn't read wad miptex entry");
                     }
                 }
                 ContentType::Font => match goldsrc_rs::font(entry.reader()) {
@@ -244,7 +244,7 @@ impl Filesystem for WadFS {
             .enumerate()
             .find(|(_, inode)| inode.parent == Some(parent) && inode.name == name)
         {
-            reply.entry(&self.ttl_attr, &inode.resolve_file_attr(ino as Ino), 0);
+            reply.entry(&self.ttl_attr, &inode.file_attr(ino as Ino), 0);
         } else {
             reply.error(ENOENT);
         }
@@ -279,7 +279,7 @@ impl Filesystem for WadFS {
 
     fn getattr(&mut self, _req: &Request<'_>, ino: Ino, reply: ReplyAttr) {
         if let Some(inode) = self.inodes.read().unwrap().get(ino as usize) {
-            reply.attr(&self.ttl_attr, &inode.resolve_file_attr(ino));
+            reply.attr(&self.ttl_attr, &inode.file_attr(ino));
         } else {
             reply.error(ENOENT);
         }
