@@ -18,8 +18,7 @@ struct Args {
 
 fn main() {
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .pretty()
+        .with_max_level(Level::DEBUG)
         .init();
 
     let args = Args::parse();
