@@ -118,7 +118,7 @@ impl WadFS {
         let Self { inodes, .. } = self;
 
         goldsrc_rs::wad_entries(reader, true)?
-            .into_iter()
+            .into_par_iter()
             .for_each(|(name, entry)| match entry.ty {
                 ContentType::Picture => match goldsrc_rs::pic(entry.reader()) {
                     Ok(Picture {
@@ -157,7 +157,6 @@ impl WadFS {
                         if let Some(data) = &data {
                             let miptex_ino = {
                                 let mut inodes = inodes.write().unwrap();
-
                                 inodes.push(INode {
                                     name: OsString::from(name.as_str()).into(),
                                     parent: Some(MIPTEXS_DIR_INO),
@@ -267,11 +266,9 @@ impl Filesystem for WadFS {
             .filter(|(_, inode)| inode.parent == Some(ino))
             .enumerate()
             .skip(offset as usize)
-            // FIXME: Error if removed
-            .take(5)
         {
             if reply.add(ino as Ino, (i + 1) as i64, inode.file_type(), &inode.name) {
-                return;
+                break;
             }
         }
         reply.ok()
