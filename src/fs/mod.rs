@@ -157,13 +157,14 @@ impl WadFS {
                         if let Some(data) = &data {
                             let miptex_ino = {
                                 let mut inodes = inodes.write().unwrap();
+                                let ino = inodes.len() as Ino;
                                 inodes.push(INode {
                                     name: OsString::from(name.as_str()).into(),
                                     parent: Some(MIPTEXS_DIR_INO),
                                     ..Default::default()
                                 });
 
-                                inodes.len() as Ino
+                                ino
                             };
 
                             for i in 0..MIP_LEVELS {
